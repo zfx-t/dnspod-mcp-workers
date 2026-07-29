@@ -1,0 +1,26 @@
+# Cloudflare Workers — DNSPod Online MCP
+# https://github.com/zfx-t/dnspod-mcp-workers
+#
+# Deploy:
+#   npx wrangler secret put TENCENTCLOUD_SECRET_ID
+#   npx wrangler secret put TENCENTCLOUD_SECRET_KEY
+#   npx wrangler secret put OAUTH_PASSWORD
+#   npx wrangler secret put OAUTH_JWT_SECRET
+#   npx wrangler deploy
+#
+# Optional custom domain:
+#   npx wrangler domains add mcp.example.com
+
+name = "dnspod-mcp"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+workers_dev = true
+
+[vars]
+TENCENTCLOUD_REGION = "ap-guangzhou"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+# Create first:  npx wrangler kv namespace create dnspod-mcp-oauth
+# Then paste id:
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

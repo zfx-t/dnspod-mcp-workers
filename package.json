@@ -1,0 +1,33 @@
+{
+  "name": "dnspod-mcp-workers",
+  "version": "2.0.0",
+  "description": "Turn Tencent DNSPod into a remote MCP server on Cloudflare Workers (OAuth 2.1 + Streamable HTTP)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "mcp",
+    "dnspod",
+    "tencent-cloud",
+    "cloudflare-workers",
+    "oauth",
+    "grok",
+    "model-context-protocol"
+  ],
+  "author": "zfx-t",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zfx-t/dnspod-mcp-workers.git"
+  }
+}
