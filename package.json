@@ -1,6 +1,6 @@
 {
   "name": "dnspod-mcp-workers",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Turn Tencent DNSPod into a remote MCP server on Cloudflare Workers (OAuth 2.1 + Streamable HTTP)",
   "private": true,
   "type": "module",
