@@ -48,9 +48,6 @@ Cloudflare Worker  (dnspod-mcp)
 
 ## 功能 / Tools
 
-每个 tool 均含中英双语详细 `description`、参数说明、使用场景与示例（见 `src/index.js` 中 `TOOLS`），便于 Grok/Claude 正确选工具。
-
-
 | Tool | 对应 API | 说明 |
 | --- | --- | --- |
 | `describe_domain_list` | DescribeDomainList | 域名列表 |

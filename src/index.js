@@ -7,10 +7,17 @@
 
 const SERVER = {
   name: "dnspod-mcp",
-  version: "2.1.0",
-  title: "DNSPod MCP",
+  version: "2.3.0",
+  title: "DNSPod MCP — Tencent Cloud DNS",
   description:
-    "Remote MCP server for Tencent Cloud DNSPod. Manage DNS domains and records, and query resolution analytics over Streamable HTTP with OAuth 2.1.",
+    "腾讯云 DNSPod 远程 MCP 服务：通过 Streamable HTTP + OAuth 2.1 管理权威 DNS。" +
+    "Remote MCP for Tencent Cloud DNSPod — manage domains & DNS records, query analytics.\n\n" +
+    "能力 / Capabilities:\n" +
+    "• 域名：列表 / 添加 / 详情（describe_domain_list, create_domain, describe_domain）\n" +
+    "• 解析记录：列表 / 新增 / 修改 / 删除（A AAAA CNAME MX TXT NS SRV CAA 等）\n" +
+    "• 解析量统计：整域 / 子域名（DATE 或 HOUR 粒度）\n\n" +
+    "安全 / Security: 腾讯云 SecretId/Key 仅存于 Cloudflare Worker Secrets，客户端只走 OAuth。" +
+    "适合 Grok Connectors、Claude 等远程 MCP 客户端。",
 };
 const MCP_PROTOCOL = "2025-03-26";
 const ACCESS_TTL = 3600;
@@ -149,141 +156,225 @@ async function tencentRequest(env, action, payload = {}) {
 }
 
 /**
- * Rich tool definitions for MCP clients (Grok / Claude).
- * Descriptions are bilingual and include when-to-use + examples so models pick tools correctly.
+ * Rich tool definitions for MCP clients (Grok / Claude / Cursor).
+ * Each tool description is written for LLM tool-selection: what / when / not-when /
+ * prerequisites / side-effects / returns / examples / API mapping.
+ * Parameter descriptions are bilingual and include units, enums, and pitfalls.
  */
 const TOOLS = [
   {
     name: "describe_domain_list",
-    title: "List DNS domains",
+    title: "列出 DNS 域名 / List domains",
     description:
-      "查询当前账号在 DNSPod 中的域名列表（权威 DNS 托管域名）。\n" +
-      "List all DNS domains managed in DNSPod for this account.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户问「我有哪些域名」「列出域名」\n" +
-      "- 需要 DomainId、套餐等级、记录数量、DNS 服务器等概览信息\n" +
-      "- 后续改记录前先确认域名是否存在\n\n" +
-      "返回 / Returns: DomainList（Name, DomainId, Status, Grade, RecordCount, EffectiveDNS 等）与 DomainCountInfo。\n" +
-      "示例 / Example: { \"Limit\": 20 } 或 { \"Keyword\": \"zfxt\", \"Type\": \"ALL\" }",
+      "【作用】查询当前腾讯云账号在 DNSPod 中托管的域名列表（权威 DNS 域名库存）。\n" +
+      "[What] List all DNS domains hosted on DNSPod for this Tencent Cloud account.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户问：我有哪些域名、域名列表、DomainId、套餐等级、解析条数、NS 是什么\n" +
+      "• 后续要增删改记录但还不知道 Domain / DomainId 时，先调本工具\n" +
+      "• 按关键字搜索域名（Keyword）或分页浏览\n\n" +
+      "【不要用 / Do not use】\n" +
+      "• 查某域名下的解析记录 → describe_record_list\n" +
+      "• 只要某一个域名的深度详情 → describe_domain\n\n" +
+      "【返回要点 / Returns】DomainList[]：Name, DomainId, Status(ENABLE/…), Grade/GradeTitle(套餐),\n" +
+      "RecordCount, IsVip, TTL, EffectiveDNS(NS), CreatedOn, UpdatedOn；以及 DomainCountInfo 汇总计数。\n\n" +
+      "【示例 / Examples】\n" +
+      '1) 全部：{} 或 { "Type": "ALL", "Limit": 20 }\n' +
+      '2) 搜索：{ "Keyword": "zfxt", "Type": "ALL" }\n' +
+      '3) 仅付费：{ "Type": "VIP" }\n' +
+      '4) 第 2 页：{ "Offset": 20, "Limit": 20 }\n\n' +
+      "API: DescribeDomainList (dnspod 2021-03-23). 只读、无副作用。",
     inputSchema: {
       type: "object",
       properties: {
         Type: {
           type: "string",
           description:
-            "域名分组类型。可选: ALL(全部,默认), MINE(我的), SHARE(共享给我), ISMARK(星标), PAUSE(暂停), VIP(付费), RECENT(最近操作), SHARE_OUT(我共享出), FREE(免费)。",
+            "域名分组过滤 / Domain group filter。默认 ALL。\n" +
+            "枚举：ALL=全部 | MINE=我的 | SHARE=共享给我 | ISMARK=星标 | PAUSE=暂停 |\n" +
+            "VIP=付费 | RECENT=最近操作 | SHARE_OUT=我共享出 | FREE=免费。",
           enum: ["ALL", "MINE", "SHARE", "ISMARK", "PAUSE", "VIP", "RECENT", "SHARE_OUT", "FREE"],
           default: "ALL",
         },
-        Offset: { type: "integer", description: "分页偏移，从 0 开始。默认 0。", minimum: 0, default: 0 },
+        Offset: {
+          type: "integer",
+          description: "分页偏移（从 0 开始）/ Pagination offset, 0-based. 默认 0。",
+          minimum: 0,
+          default: 0,
+        },
         Limit: {
           type: "integer",
-          description: "返回条数，默认 20，最大 100（API 侧更大值也可能被截断）。",
+          description: "每页条数 / Page size。默认 20，最大 100。",
           minimum: 1,
           maximum: 100,
           default: 20,
         },
-        GroupId: { type: "integer", description: "域名分组 ID；传入则只返回该分组内的域名。" },
-        Keyword: { type: "string", description: "按域名关键字模糊搜索，如 zfxt 或 example.com。" },
+        GroupId: {
+          type: "integer",
+          description: "可选。只返回该 DNSPod 域名分组 ID 内的域名 / Optional domain group ID filter.",
+        },
+        Keyword: {
+          type: "string",
+          description:
+            "按域名关键字模糊搜索 / Fuzzy search on domain name。如 zfxt、example.com。可与 Type 联用。",
+        },
       },
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "List DNS domains",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "create_domain",
-    title: "Add domain to DNSPod",
+    title: "添加域名到 DNSPod / Add domain",
     description:
-      "在 DNSPod 中添加一个待解析的域名（将域名托管到 DNSPod 权威解析）。\n" +
-      "Add a new domain into DNSPod authoritative DNS management.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户要「把 xxx.com 加到 DNSPod」「创建/添加域名」\n" +
-      "- 注意：这只是在 DNSPod 侧添加域名，注册商 NS 仍需改成 DNSPod 给的 DNS 服务器后才生效\n\n" +
-      "返回 / Returns: 新建域名的 DomainId 等信息。\n" +
-      "示例 / Example: { \"Domain\": \"example.com\" }",
+      "【作用】在 DNSPod 中添加一个待托管的主域名（把域名加入 DNSPod 权威解析管理）。\n" +
+      "[What] Register an apex domain into DNSPod management (not domain-name registration purchase).\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户说：把 example.com 加到 DNSPod、创建/添加域名、开始用 DNSPod 解析某域名\n\n" +
+      "【重要 / Important】\n" +
+      "1) 这不是在注册商处「购买域名」，只是 DNSPod 侧托管配置。\n" +
+      "2) 全网生效还需在注册商把 NS 改成接口返回的 DNSPod 服务器（如 *.dnspod.net）。\n" +
+      "3) 只传主域名（apex）：example.com / zfxt.top。不要带 http://、路径、www 或子域名。\n" +
+      "4) 域名已被他人添加或已存在时会报错。\n\n" +
+      "【返回】新域名 DomainId 及元数据。\n" +
+      '【示例】{ "Domain": "example.com" }\n\n' +
+      "API: CreateDomain. 有副作用（创建域名对象）。",
     inputSchema: {
       type: "object",
       properties: {
         Domain: {
           type: "string",
-          description: "要添加的主域名，不含协议与路径，如 example.com 或 zfxt.top。",
+          description:
+            "要添加的主域名 / Apex domain only。示例：example.com、zfxt.top。禁止 scheme、路径、端口、子域前缀。",
         },
-        GroupId: { type: "integer", description: "可选，加入指定域名分组。" },
+        GroupId: {
+          type: "integer",
+          description: "可选。加入指定域名分组 ID / Optional group ID to place the domain into.",
+        },
       },
       required: ["Domain"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    annotations: {
+      title: "Add domain",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   {
     name: "describe_domain",
-    title: "Get domain details",
+    title: "域名详情 / Domain details",
     description:
-      "查询单个域名的详细信息（状态、套餐、NS、记录数、创建时间等）。\n" +
-      "Get detailed information for one DNS domain.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户问某个域名是否启用、用的什么套餐、NS 是什么\n" +
-      "- 比 describe_domain_list 更聚焦单个域名\n\n" +
-      "参数: Domain 与 DomainId 二选一，DomainId 优先。\n" +
-      "示例 / Example: { \"Domain\": \"zfxt.top\" }",
+      "【作用】查询单个域名的详细状态：是否启用、套餐、NS、记录数、VIP、默认 TTL、创建/更新时间等。\n" +
+      "[What] Get deep details for one domain (status, plan, NS, counts, VIP, TTL defaults, timestamps).\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户问某个具体域名是否启用、用什么套餐、NS 是什么、DomainId 是多少\n" +
+      "• 已有明确域名，不需要整表列表时优先本工具（比 describe_domain_list 更聚焦）\n\n" +
+      "【参数】Domain 或 DomainId 至少一个；两者都传时 DomainId 优先。\n" +
+      '【示例】{ "Domain": "zfxt.top" }\n\n' +
+      "API: DescribeDomain. 只读。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "域名，如 zfxt.top。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain name，如 zfxt.top。",
+        },
         DomainId: {
           type: "integer",
-          description: "域名 ID（来自 describe_domain_list）。若同时传 Domain 与 DomainId，DomainId 优先。",
+          description:
+            "域名数字 ID（来自 describe_domain_list）/ Numeric DomainId. 与 Domain 同传时优先使用 DomainId。",
         },
       },
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Get domain details",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "describe_record_list",
-    title: "List DNS records",
+    title: "解析记录列表 / List DNS records",
     description:
-      "查询指定域名下的 DNS 解析记录列表（A/AAAA/CNAME/MX/TXT/NS 等）。\n" +
-      "List DNS records under a domain (A, AAAA, CNAME, MX, TXT, NS, etc.).\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户问「有哪些解析」「www 指到哪」「列出 TXT 记录」\n" +
-      "- 修改/删除记录前必须先查 RecordId\n\n" +
-      "返回 / Returns: RecordList（RecordId, Name, Type, Value, Line, TTL, MX, Status 等）。\n" +
-      "示例 / Example:\n" +
-      "{ \"Domain\": \"zfxt.top\" }\n" +
-      "{ \"Domain\": \"zfxt.top\", \"Subdomain\": \"www\", \"RecordType\": \"A\" }\n" +
-      "{ \"Domain\": \"zfxt.top\", \"Keyword\": \"1.2.3\" }",
+      "【作用】列出指定域名下的 DNS 资源记录（A/AAAA/CNAME/MX/TXT/NS/SRV/CAA/显性URL/隐性URL 等）。\n" +
+      "[What] List DNS resource records under one domain; primary way to obtain RecordId.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户问：有哪些解析、www 指到哪、列出 TXT/MX、某 IP 对应哪条记录\n" +
+      "• 在 modify_record 或 delete_record 之前必须先调用，以获取并核对 RecordId\n\n" +
+      "【过滤 / Filters】\n" +
+      "• Subdomain：主机记录，如 www / @ / * / mail（不要写 FQDN）\n" +
+      "• RecordType：A、AAAA、CNAME、MX、TXT…\n" +
+      "• RecordLine / RecordLineId：线路（默认、电信…）\n" +
+      "• Keyword：搜主机头或记录值；Offset/Limit/SortField/SortType 分页排序\n\n" +
+      "【返回要点】RecordList[]：RecordId, Name(主机), Type, Value, Line, LineId, TTL, MX, Weight, Status, UpdatedOn, Remark。\n\n" +
+      "【示例】\n" +
+      '{ "Domain": "zfxt.top" }\n' +
+      '{ "Domain": "zfxt.top", "Subdomain": "www", "RecordType": "A" }\n' +
+      '{ "Domain": "zfxt.top", "RecordType": "TXT" }\n' +
+      '{ "Domain": "zfxt.top", "Keyword": "1.2.3" }\n\n' +
+      "API: DescribeRecordList. 只读。改删记录前的必经步骤。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名，如 zfxt.top。必填（除非用 DomainId）。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain，如 zfxt.top。一般必填（或用 DomainId）。",
+        },
         DomainId: {
           type: "integer",
-          description: "域名 ID；优先级高于 Domain。",
+          description: "域名 ID；若提供则优先于 Domain / DomainId preferred over Domain.",
         },
         Subdomain: {
           type: "string",
-          description: "主机记录过滤。如 www、@、*、mail。不传则返回全部主机记录。",
+          description:
+            "主机记录过滤 / Host label filter only。填 www、@、*、mail，不要填 www.zfxt.top。省略则返回全部主机。",
         },
         RecordType: {
           type: "string",
-          description: "记录类型过滤：A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, 显性URL, 隐性URL 等。",
+          description:
+            "记录类型过滤 / Type filter：A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, 显性URL, 隐性URL 等。",
         },
         RecordLine: {
           type: "string",
-          description: "线路名称过滤（中文），如 默认、电信、联通、移动、境外。",
+          description:
+            "线路中文名过滤 / Chinese line name：默认, 电信, 联通, 移动, 境外 等。",
         },
         RecordLineId: {
           type: "string",
-          description: "线路 ID（英文编码，如 0 或 10=1）。优先级高于 RecordLine。",
+          description:
+            "线路 ID（如 0、10=1）。与 RecordLine 同传时优先 RecordLineId / Line ID overrides RecordLine.",
         },
-        Keyword: { type: "string", description: "关键字搜索：匹配主机头或记录值。" },
+        Keyword: {
+          type: "string",
+          description: "关键字，匹配主机头或记录值 / Search host name or record value.",
+        },
         SortField: {
           type: "string",
           description: "排序字段：name, line, type, value, weight, mx, ttl, updated_on。",
         },
-        SortType: { type: "string", description: "排序方向：ASC 或 DESC。默认 ASC。", enum: ["ASC", "DESC"] },
-        Offset: { type: "integer", description: "分页偏移，默认 0。", minimum: 0, default: 0 },
+        SortType: {
+          type: "string",
+          description: "排序方向 ASC 或 DESC，默认 ASC。",
+          enum: ["ASC", "DESC"],
+          default: "ASC",
+        },
+        Offset: {
+          type: "integer",
+          description: "分页偏移，默认 0。",
+          minimum: 0,
+          default: 0,
+        },
         Limit: {
           type: "integer",
           description: "返回条数，默认 100，最大约 3000。",
@@ -295,145 +386,263 @@ const TOOLS = [
       required: ["Domain"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "List DNS records",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "create_record",
-    title: "Create DNS record",
+    title: "新增解析记录 / Create DNS record",
     description:
-      "为域名新增一条 DNS 解析记录。\n" +
-      "Create a new DNS record under a domain.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户说「加一条 A 记录」「把 www 指到 IP」「添加 CNAME / TXT / MX」\n\n" +
-      "注意 / Notes:\n" +
-      "- SubDomain 用主机头：www / @ / * / mail，不要写成完整 FQDN\n" +
-      "- RecordLine 默认「默认」；免费版通常只用默认线路\n" +
-      "- MX 记录必须传 MX 优先级（越小越优先）\n" +
-      "- TTL 单位秒，免费版常见 600\n\n" +
-      "示例 / Examples:\n" +
-      "A: { \"Domain\": \"zfxt.top\", \"SubDomain\": \"www\", \"RecordType\": \"A\", \"Value\": \"1.2.3.4\" }\n" +
-      "CNAME: { \"Domain\": \"zfxt.top\", \"SubDomain\": \"blog\", \"RecordType\": \"CNAME\", \"Value\": \"xxx.github.io.\" }\n" +
-      "TXT: { \"Domain\": \"zfxt.top\", \"SubDomain\": \"@\", \"RecordType\": \"TXT\", \"Value\": \"v=spf1 include:_spf.google.com ~all\" }\n" +
-      "MX: { \"Domain\": \"zfxt.top\", \"SubDomain\": \"@\", \"RecordType\": \"MX\", \"Value\": \"mx.example.com.\", \"MX\": 10 }",
+      "【作用】为域名新增一条 DNS 解析记录（A/AAAA/CNAME/MX/TXT/NS/SRV/CAA 等）。\n" +
+      "[What] Create one DNS resource record under a domain. Returns new RecordId.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户说：加一条 A 记录、www 指到 IP、添加 CNAME/TXT/MX/AAAA、做邮箱/验证 TXT\n\n" +
+      "【硬规则 / Rules】\n" +
+      "1) SubDomain 只写主机头：@（根域名）、www、*、mail、api — 禁止 FQDN\n" +
+      "2) RecordLine 默认「默认」；免费套餐通常只能用默认线路\n" +
+      "3) MX 类型必须传 MX 优先级（整数，越小越优先，常见 1–20）\n" +
+      "4) Value 格式：A=IPv4；AAAA=IPv6；CNAME/MX/NS=主机名（建议以 . 结尾）；TXT=原文\n" +
+      "5) TTL 单位秒；免费套餐常见 600（允许范围依套餐，如 60–604800）\n" +
+      "6) 生效时间取决于 TTL 与各地缓存，不是接口返回即全球立即刷新\n\n" +
+      "【示例】\n" +
+      'A: { "Domain": "zfxt.top", "SubDomain": "www", "RecordType": "A", "Value": "1.2.3.4", "TTL": 600 }\n' +
+      '根域 A: { "Domain": "zfxt.top", "SubDomain": "@", "RecordType": "A", "Value": "1.2.3.4" }\n' +
+      'CNAME: { "Domain": "zfxt.top", "SubDomain": "blog", "RecordType": "CNAME", "Value": "xxx.github.io." }\n' +
+      'TXT: { "Domain": "zfxt.top", "SubDomain": "@", "RecordType": "TXT", "Value": "v=spf1 include:_spf.google.com ~all" }\n' +
+      'MX: { "Domain": "zfxt.top", "SubDomain": "@", "RecordType": "MX", "Value": "mx.example.com.", "MX": 10 }\n' +
+      'AAAA: { "Domain": "zfxt.top", "SubDomain": "@", "RecordType": "AAAA", "Value": "2400:3200::1" }\n\n' +
+      "API: CreateRecord. 有副作用（DNS 变更）。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名，如 zfxt.top。" },
-        DomainId: { type: "integer", description: "可选，域名 ID；优先于 Domain。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain，如 zfxt.top。",
+        },
+        DomainId: {
+          type: "integer",
+          description: "可选域名 ID；与 Domain 同传时优先 DomainId。",
+        },
         SubDomain: {
           type: "string",
-          description: "主机记录。@ 表示根域名，www 表示 www.域名，* 表示泛解析。",
+          description:
+            "主机记录 / Host label。@ = 根域名，www = www.域名，* = 泛解析。禁止传完整 FQDN。",
         },
         RecordType: {
           type: "string",
-          description: "记录类型：A, AAAA, CNAME, MX, TXT, NS, SRV, CAA 等。",
+          description: "记录类型 / Type：A, AAAA, CNAME, MX, TXT, NS, SRV, CAA 等。",
         },
         RecordLine: {
           type: "string",
-          description: "解析线路，中文。默认「默认」。常见: 默认, 电信, 联通, 移动, 境外。",
+          description:
+            "解析线路中文名 / Line name。默认「默认」。常见：默认, 电信, 联通, 移动, 境外。免费版多用默认。",
           default: "默认",
         },
-        RecordLineId: { type: "string", description: "线路 ID；若提供则优先于 RecordLine。" },
+        RecordLineId: {
+          type: "string",
+          description: "线路 ID；提供时优先于 RecordLine / Line ID overrides RecordLine.",
+        },
         Value: {
           type: "string",
           description:
-            "记录值。A=IPv4；AAAA=IPv6；CNAME/MX/NS=目标主机名（建议以.结尾）；TXT=文本内容。",
+            "记录值 / Value。A=IPv4；AAAA=IPv6；CNAME/MX/NS=目标主机名(建议以.结尾)；TXT=文本；SRV 按规范格式。",
         },
         TTL: {
           type: "integer",
-          description: "TTL（秒）。免费版常用 600；可设 60–604800（受套餐限制）。",
+          description: "TTL（秒）/ TTL in seconds。免费套餐常见 600。",
           minimum: 1,
         },
         MX: {
           type: "integer",
-          description: "MX 优先级，仅 MX 记录需要。取值通常 1–20，数字越小优先级越高。",
+          description: "MX 优先级（仅 MX 类型需要）/ MX priority required for MX. 越小越优先，常见 1–20。",
           minimum: 0,
           maximum: 50,
         },
-        Weight: { type: "integer", description: "权重（部分套餐/类型支持加权轮询）。", minimum: 0, maximum: 100 },
-        Remark: { type: "string", description: "记录备注（可选）。" },
+        Weight: {
+          type: "integer",
+          description: "可选权重（部分套餐支持加权轮询）/ Optional weight 0–100.",
+          minimum: 0,
+          maximum: 100,
+        },
+        Remark: {
+          type: "string",
+          description: "可选备注 / Optional remark string.",
+        },
       },
       required: ["Domain", "SubDomain", "RecordType", "Value"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    annotations: {
+      title: "Create DNS record",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   {
     name: "modify_record",
-    title: "Update DNS record",
+    title: "修改解析记录 / Update DNS record",
     description:
-      "修改已有 DNS 解析记录（必须提供 RecordId）。\n" +
-      "Update an existing DNS record. RecordId is required.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户要改 IP、改 CNAME 目标、改 TTL、改主机头\n" +
-      "- 流程：先 describe_record_list 拿到 RecordId，再调用本工具\n\n" +
-      "注意：修改时通常需完整传入 SubDomain、RecordType、Value、RecordLine（与创建类似）。\n\n" +
-      "示例 / Example:\n" +
-      "{ \"Domain\": \"zfxt.top\", \"RecordId\": 123456789, \"SubDomain\": \"www\", \"RecordType\": \"A\", \"RecordLine\": \"默认\", \"Value\": \"5.6.7.8\", \"TTL\": 600 }",
+      "【作用】修改已存在的一条 DNS 记录。必须提供 RecordId。\n" +
+      "[What] Update an existing DNS record. RecordId is REQUIRED.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户要改 IP、改 CNAME 目标、改 TTL、改主机头、改线路、改 MX 优先级\n\n" +
+      "【推荐流程 / Workflow】\n" +
+      "1) describe_record_list → 找到正确的 RecordId 及当前 Type/Value/Line/SubDomain\n" +
+      "2) 再调 modify_record，带上修改后的完整必填字段\n" +
+      "3) 必填：Domain, RecordId, SubDomain, RecordType, Value；RecordLine 默认「默认」\n\n" +
+      "【不要用】新建记录用 create_record；删除用 delete_record。\n\n" +
+      "【示例】\n" +
+      '{ "Domain": "zfxt.top", "RecordId": 123456789, "SubDomain": "www", "RecordType": "A", "RecordLine": "默认", "Value": "5.6.7.8", "TTL": 600 }\n\n' +
+      "API: ModifyRecord. 有副作用（DNS 变更）。同一 RecordId 重复提交相同内容可视为幂等。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名。" },
-        DomainId: { type: "integer", description: "可选域名 ID。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain，如 zfxt.top。",
+        },
+        DomainId: {
+          type: "integer",
+          description: "可选域名 ID / Optional DomainId.",
+        },
         RecordId: {
           type: "integer",
-          description: "要修改的记录 ID（来自 describe_record_list）。必填。",
+          description:
+            "要修改的记录 ID（必填，来自 describe_record_list）/ Target RecordId from list API. Required.",
         },
-        SubDomain: { type: "string", description: "主机记录，如 www 或 @。" },
-        RecordType: { type: "string", description: "记录类型：A, AAAA, CNAME, MX, TXT 等。" },
-        RecordLine: { type: "string", description: "线路，默认「默认」。", default: "默认" },
-        RecordLineId: { type: "string", description: "线路 ID（可选，优先于 RecordLine）。" },
-        Value: { type: "string", description: "新的记录值。" },
-        TTL: { type: "integer", description: "TTL（秒）。" },
-        MX: { type: "integer", description: "MX 优先级（MX 记录必填）。" },
-        Weight: { type: "integer", description: "权重（若套餐支持）。" },
-        Remark: { type: "string", description: "备注。" },
+        SubDomain: {
+          type: "string",
+          description: "修改后的主机记录 / Host label after change，如 www 或 @。",
+        },
+        RecordType: {
+          type: "string",
+          description: "修改后的类型 / Type after change：A, AAAA, CNAME, MX, TXT 等。",
+        },
+        RecordLine: {
+          type: "string",
+          description: "线路中文名，默认「默认」/ Line name, default 默认.",
+          default: "默认",
+        },
+        RecordLineId: {
+          type: "string",
+          description: "线路 ID，优先于 RecordLine / Line ID preferred over RecordLine.",
+        },
+        Value: {
+          type: "string",
+          description: "新的记录值 / New value（IP、CNAME 目标、TXT 文本等）。",
+        },
+        TTL: {
+          type: "integer",
+          description: "TTL（秒）/ TTL in seconds.",
+          minimum: 1,
+        },
+        MX: {
+          type: "integer",
+          description: "MX 优先级；当 RecordType=MX 时必填 / MX priority when type is MX.",
+        },
+        Weight: {
+          type: "integer",
+          description: "可选权重 / Optional weight.",
+        },
+        Remark: {
+          type: "string",
+          description: "可选备注 / Optional remark.",
+        },
       },
       required: ["Domain", "RecordId", "SubDomain", "RecordType", "Value"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    annotations: {
+      title: "Update DNS record",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "delete_record",
-    title: "Delete DNS record",
+    title: "删除解析记录 / Delete DNS record",
     description:
-      "删除一条 DNS 解析记录（不可恢复，请确认 RecordId）。\n" +
-      "Permanently delete one DNS record by RecordId.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户明确要求删除某条解析\n" +
-      "- 务必先 describe_record_list 核对 RecordId、主机头与记录值，避免误删\n\n" +
-      "示例 / Example: { \"Domain\": \"zfxt.top\", \"RecordId\": 123456789 }",
+      "【作用】按 RecordId 永久删除一条 DNS 解析记录（不可恢复）。\n" +
+      "[What] Permanently delete one DNS record by RecordId. Destructive, not undoable via this tool.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户明确要求删除某条解析、去掉某主机头的 A/CNAME/TXT 等\n\n" +
+      "【安全 / Safety】\n" +
+      "1) 必须先 describe_record_list，核对 RecordId + 主机头 + 类型 + 记录值\n" +
+      "2) 禁止猜测 RecordId\n" +
+      "3) 删除 @ 根记录、MX、关键 NS/验证 TXT 可能导致网站/邮箱/证书验证失败——有歧义时先向用户确认\n\n" +
+      '【示例】{ "Domain": "zfxt.top", "RecordId": 123456789 }\n\n' +
+      "API: DeleteRecord. 破坏性副作用。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名。" },
-        DomainId: { type: "integer", description: "可选域名 ID。" },
-        RecordId: { type: "integer", description: "要删除的记录 ID。必填。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain。",
+        },
+        DomainId: {
+          type: "integer",
+          description: "可选域名 ID / Optional DomainId.",
+        },
+        RecordId: {
+          type: "integer",
+          description: "要删除的记录 ID（必填）/ RecordId to delete. Required.",
+        },
       },
       required: ["Domain", "RecordId"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    annotations: {
+      title: "Delete DNS record",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "describe_domain_analytics",
-    title: "Domain DNS query analytics",
+    title: "域名解析量统计 / Domain analytics",
     description:
-      "查询整个域名在指定时间范围内的 DNS 解析量统计。\n" +
-      "Get DNS query volume analytics for a whole domain.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户问「这个域名解析量多少」「最近访问/查询量」\n" +
-      "- 需要按天或按小时的解析请求统计\n\n" +
-      "注意: StartDate/EndDate 格式 YYYY-MM-DD；免费套餐可能限制统计范围。\n" +
-      "示例 / Example: { \"Domain\": \"zfxt.top\", \"StartDate\": \"2026-07-01\", \"EndDate\": \"2026-07-29\", \"DnsFormat\": \"DATE\" }",
+      "【作用】查询整个域名在指定日期范围内的 DNS 解析请求量统计（按天或按小时）。\n" +
+      "[What] DNS query volume analytics for a whole domain over a date range.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户问：这个域名解析量多少、最近访问/查询量、按天/小时流量\n" +
+      "• 需要整域合计时用本工具；若只要某一个主机头 → describe_subdomain_analytics\n\n" +
+      "【参数说明】\n" +
+      "• StartDate / EndDate：YYYY-MM-DD（闭区间以 API 为准）\n" +
+      "• DnsFormat：DATE=按天聚合，HOUR=按小时聚合（默认 DATE）\n" +
+      "• 免费套餐可能限制可查历史长度或粒度\n\n" +
+      "【示例】\n" +
+      '{ "Domain": "zfxt.top", "StartDate": "2026-07-01", "EndDate": "2026-07-29", "DnsFormat": "DATE" }\n\n' +
+      "API: DescribeDomainAnalytics. 只读。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名。" },
-        DomainId: { type: "integer", description: "可选域名 ID，优先于 Domain。" },
-        StartDate: { type: "string", description: "开始日期，YYYY-MM-DD。" },
-        EndDate: { type: "string", description: "结束日期，YYYY-MM-DD。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain。",
+        },
+        DomainId: {
+          type: "integer",
+          description: "可选域名 ID，优先于 Domain / Optional DomainId preferred over Domain.",
+        },
+        StartDate: {
+          type: "string",
+          description: "开始日期，格式 YYYY-MM-DD / Range start, e.g. 2026-07-01。",
+        },
+        EndDate: {
+          type: "string",
+          description: "结束日期，格式 YYYY-MM-DD / Range end, e.g. 2026-07-29。",
+        },
         DnsFormat: {
           type: "string",
           description: "统计粒度：DATE=按天，HOUR=按小时。默认 DATE。",
@@ -444,28 +653,53 @@ const TOOLS = [
       required: ["Domain", "StartDate", "EndDate"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Domain analytics",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   {
     name: "describe_subdomain_analytics",
-    title: "Subdomain DNS query analytics",
+    title: "子域名解析量统计 / Subdomain analytics",
     description:
-      "查询指定子域名（主机记录）的 DNS 解析量统计。\n" +
-      "Get DNS query analytics for one subdomain/host record.\n\n" +
-      "何时使用 / When to use:\n" +
-      "- 用户问「www 的解析量」「某个子域名请求量」\n\n" +
-      "示例 / Example: { \"Domain\": \"zfxt.top\", \"Subdomain\": \"www\", \"StartDate\": \"2026-07-01\", \"EndDate\": \"2026-07-29\" }",
+      "【作用】查询指定主机记录（子域名）在日期范围内的 DNS 解析量。\n" +
+      "[What] DNS query analytics for one host/subdomain under a domain.\n\n" +
+      "【何时用 / When】\n" +
+      "• 用户问：www 的解析量、api 子域名请求量、某个主机头的查询统计\n" +
+      "• 不要用本工具查整域合计 → 用 describe_domain_analytics\n\n" +
+      "【参数说明】\n" +
+      "• Subdomain 只填主机头：www / @ / api，不要带主域名后缀（禁止 www.zfxt.top）\n" +
+      "• StartDate/EndDate：YYYY-MM-DD；DnsFormat：DATE 或 HOUR\n\n" +
+      "【示例】\n" +
+      '{ "Domain": "zfxt.top", "Subdomain": "www", "StartDate": "2026-07-01", "EndDate": "2026-07-29", "DnsFormat": "DATE" }\n\n' +
+      "API: DescribeSubdomainAnalytics. 只读。",
     inputSchema: {
       type: "object",
       properties: {
-        Domain: { type: "string", description: "主域名。" },
-        DomainId: { type: "integer", description: "可选域名 ID。" },
+        Domain: {
+          type: "string",
+          description: "主域名 / Apex domain。",
+        },
+        DomainId: {
+          type: "integer",
+          description: "可选域名 ID / Optional DomainId.",
+        },
         Subdomain: {
           type: "string",
-          description: "主机记录，如 www、@、api（不要带主域名后缀）。",
+          description:
+            "主机记录 / Host label only：www、@、api。禁止写完整 FQDN（不要写 www.zfxt.top）。",
         },
-        StartDate: { type: "string", description: "开始日期，YYYY-MM-DD。" },
-        EndDate: { type: "string", description: "结束日期，YYYY-MM-DD。" },
+        StartDate: {
+          type: "string",
+          description: "开始日期 YYYY-MM-DD / Range start.",
+        },
+        EndDate: {
+          type: "string",
+          description: "结束日期 YYYY-MM-DD / Range end.",
+        },
         DnsFormat: {
           type: "string",
           description: "DATE=按天，HOUR=按小时。默认 DATE。",
@@ -476,9 +710,16 @@ const TOOLS = [
       required: ["Domain", "Subdomain", "StartDate", "EndDate"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Subdomain analytics",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
 ];
+
 
 async function callTool(env, n, a = {}) {
   const M = {
@@ -588,7 +829,6 @@ async function handleMcp(env, msg) {
           protocolVersion: params?.protocolVersion || MCP_PROTOCOL,
           capabilities: {
             tools: { listChanged: false },
-            // Advertise useful server surface for clients
             logging: {},
           },
           serverInfo: {
@@ -598,10 +838,26 @@ async function handleMcp(env, msg) {
             description: SERVER.description,
           },
           instructions:
-            "This is a remote DNSPod MCP server. Use describe_domain_list / describe_record_list before mutating records. " +
-            "For create_record/modify_record, SubDomain is the host label (@, www, api) not the FQDN. " +
-            "RecordLine defaults to 默认. Always confirm RecordId via describe_record_list before delete_record or modify_record. " +
-            "Dates for analytics use YYYY-MM-DD. Prefer Chinese domain/line names as returned by DNSPod APIs.",
+            "【DNSPod MCP 使用说明 / Agent Instructions】\n" +
+            "你已通过 OAuth 连接到腾讯云 DNSPod。用下列工具管理账号下权威 DNS，不要编造解析数据。\n" +
+            "\n" +
+            "【选工具】\n" +
+            "• 有哪些域名 / DomainId / 套餐 → describe_domain_list\n" +
+            "• 单个域名状态/NS → describe_domain\n" +
+            "• 查解析、找 RecordId → describe_record_list（改/删前必调）\n" +
+            "• 加解析 → create_record；改解析 → modify_record；删解析 → delete_record\n" +
+            "• 整域解析量 → describe_domain_analytics；某主机解析量 → describe_subdomain_analytics\n" +
+            "\n" +
+            "【硬规则】\n" +
+            "1) modify_record / delete_record 前必须 describe_record_list 核实 RecordId、主机头、记录值。\n" +
+            "2) SubDomain/Subdomain 只填主机记录：@ / www / api / *，禁止 FQDN（不要写 www.example.com）。\n" +
+            "3) RecordLine 默认「默认」；免费套餐通常仅支持默认线路。\n" +
+            "4) MX 必须带 MX 优先级（数字，越小越优先）；TTL 单位为秒，免费套餐常见 600。\n" +
+            "5) create_domain 只在 DNSPod 添加域名，注册商 NS 改到 DNSPod 后才全网生效。\n" +
+            "6) 统计日期格式 YYYY-MM-DD；DnsFormat 为 DATE（按天）或 HOUR（按小时）。\n" +
+            "7) delete_record 不可恢复；删除 @ / MX / 关键记录前先向用户确认。\n" +
+            "8) API 报 AuthFailure/SecretIdNotFound 时说明服务端密钥无效，勿假装查询成功。\n" +
+            "底层 API：腾讯云 DNSPod 2021-03-23（TC3-HMAC-SHA256）。",
         },
       };
     }
@@ -722,30 +978,66 @@ function unauthorized(req, issuer) {
 }
 
 function homeHtml(issuer) {
-  const tools = TOOLS.map(
-    (t) =>
-      `<li><strong>${t.name}</strong> — ${String(t.description).split("\n")[0]}</li>`
-  ).join("");
+  const tools = TOOLS.map((t) => {
+    const first = String(t.description || "").split("\n")[0];
+    const second = String(t.description || "").split("\n")[1] || "";
+    const req = (t.inputSchema?.required || []).join(", ") || "—";
+    const props = Object.keys(t.inputSchema?.properties || {}).join(", ") || "—";
+    const flags = [];
+    if (t.annotations?.readOnlyHint) flags.push("read-only");
+    if (t.annotations?.destructiveHint) flags.push("destructive");
+    if (t.annotations?.idempotentHint) flags.push("idempotent");
+    return (
+      `<li class="tool">` +
+      `<div class="tool-head"><strong>${t.name}</strong>` +
+      (t.title ? ` <span class="t">${t.title}</span>` : "") +
+      (flags.length ? ` <span class="flags">${flags.join(" · ")}</span>` : "") +
+      `</div>` +
+      `<p class="d">${first}</p>` +
+      (second ? `<p class="d2">${second}</p>` : "") +
+      `<p class="meta">required: <code>${req}</code> · params: <code>${props}</code></p>` +
+      `</li>`
+    );
+  }).join("");
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>DNSPod MCP</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif}
-body{margin:0;background:#0b1020;color:#e8eefc;padding:2rem;line-height:1.55;max-width:760px}
-a{color:#7dd3fc} pre,code{background:#121a33;padding:.15rem .4rem;border-radius:6px}
-pre{padding:12px;overflow:auto} h1{margin-top:0} ul{padding-left:1.2rem} li{margin:.45rem 0}
-.badge{display:inline-block;background:#1e3a5f;color:#93c5fd;padding:2px 8px;border-radius:999px;font-size:.8rem;margin-right:6px}
+body{margin:0;background:#0b1020;color:#e8eefc;padding:2rem;line-height:1.55;max-width:860px}
+a{color:#7dd3fc} pre,code{background:#121a33;padding:.15rem .4rem;border-radius:6px;font-size:.9em}
+pre{padding:12px;overflow:auto} h1{margin-top:0} h2{margin-top:1.6rem}
+.badge{display:inline-block;background:#1e3a5f;color:#93c5fd;padding:2px 8px;border-radius:999px;font-size:.8rem;margin:0 6px 6px 0}
+ul.tools{list-style:none;padding:0;margin:0}
+li.tool{background:#121a33;border:1px solid #243056;border-radius:12px;padding:14px 16px;margin:0 0 12px}
+.tool-head{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.tool-head strong{font-family:ui-monospace,monospace;color:#f8fafc}
+.t{color:#93c5fd;font-size:.92rem}
+.flags{font-size:.75rem;color:#86efac;background:#052e16;padding:1px 8px;border-radius:999px}
+.d{margin:.45rem 0 0;color:#e2e8f0}.d2{margin:.2rem 0 0;color:#94a3b8;font-size:.92rem}
+.meta{margin:.55rem 0 0;color:#7a89ad;font-size:.82rem}
+.note{background:#0f172a;border-left:3px solid #3b82f6;padding:10px 14px;margin:1rem 0;color:#cbd5e1}
 </style></head><body>
 <span class="badge">MCP ${MCP_PROTOCOL}</span>
 <span class="badge">OAuth 2.1 + PKCE</span>
 <span class="badge">v${SERVER.version}</span>
-<h1>DNSPod MCP（Cloudflare Workers）</h1>
+<span class="badge">${TOOLS.length} tools</span>
+<h1>DNSPod MCP</h1>
 <p>${SERVER.description}</p>
-<p>Grok Connector / 远程 MCP 客户端只需填写：</p>
+<div class="note">
+<strong>Grok / 远程 MCP 连接</strong>：Connector URL 只填下方地址，连接时浏览器完成 OAuth（输入访问密码）。腾讯云 SecretId/Key 仅存在 Worker Secrets，不会暴露给客户端。
+</div>
+<p>MCP endpoint:</p>
 <pre>${issuer}/mcp</pre>
-<p>连接时会弹出浏览器完成 OAuth（输入访问密码）。腾讯云密钥仅保存在 Worker Secrets。</p>
-<h2>Tools（${TOOLS.length}）</h2>
-<ul>${tools}</ul>
+<h2>Tools（${TOOLS.length}）— detailed descriptions for agents</h2>
+<ul class="tools">${tools}</ul>
+<h2>Agent workflow tips</h2>
+<ol>
+<li>改/删记录前先 <code>describe_record_list</code> 拿到并核对 <code>RecordId</code></li>
+<li><code>SubDomain</code> 只填主机头（@ / www / api），不要写完整 FQDN</li>
+<li>线路默认「默认」；MX 记录必须带优先级；TTL 单位秒</li>
+<li>统计类工具日期格式 <code>YYYY-MM-DD</code>，粒度 DATE 或 HOUR</li>
+</ol>
 <p><a href="/health">/health</a> ·
 <a href="/.well-known/oauth-authorization-server">OAuth metadata</a> ·
 <a href="https://github.com/zfx-t/dnspod-mcp-workers">GitHub</a></p>
@@ -768,7 +1060,15 @@ export default {
           server: SERVER,
           protocol: MCP_PROTOCOL,
           auth: "oauth2.1+pkce",
-          tools: TOOLS.map((t) => ({ name: t.name, title: t.title })),
+          tools: TOOLS.map((t) => ({
+            name: t.name,
+            title: t.title,
+            descriptionChars: (t.description || "").length,
+            paramCount: Object.keys(t.inputSchema?.properties || {}).length,
+            required: t.inputSchema?.required || [],
+            readOnly: !!t.annotations?.readOnlyHint,
+            destructive: !!t.annotations?.destructiveHint,
+          })),
           toolCount: TOOLS.length,
         },
         200,
